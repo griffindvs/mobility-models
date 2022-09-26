@@ -1,0 +1,3 @@
+#!/bin/bash
+
+cat tract_outcomes_early.csv | cut -d ',' -f 1,2,3,5147,5148,5149,5150,5151,5703,5704 > tract_outcomes_min.csv
