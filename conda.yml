@@ -1,0 +1,12 @@
+name: mobility-models
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - numpy
+  - notebook
+  - scikit-learn
+  - mlflow
+  - ipykernel
+  - matplotlib
+prefix: /Users/gcd/opt/anaconda3/envs/mobility-models
