@@ -2,6 +2,10 @@
 ########
 *.csv
 
+# Models #
+##########
+mlruns/*
+
 # Compiled source #
 ###################
 *.class
