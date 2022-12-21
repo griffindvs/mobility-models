@@ -5,6 +5,8 @@
 # Models #
 ##########
 mlruns/*
+hypervalidation/*
+*.pt
 
 # Compiled source #
 ###################
