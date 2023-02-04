@@ -28,15 +28,6 @@ from torch import nn
 from torch.distributions import Normal
 nnF = nn.functional
 
-# from torchquad import set_up_backend
-# from torchquad import Simpson, MonteCarlo
-# from torchquad.utils.set_precision import set_precision
-# import torchquad
-
-# set_up_backend("torch", data_type="float32")
-
-sys.setrecursionlimit(5000)
-
 if not os.path.exists('logs'):
     os.makedirs('logs')
 
@@ -59,24 +50,25 @@ ds = pd.read_csv('tract_merged.csv')
 cols = ['id', 'hhinc_mean2000', 'mean_commutetime2000', 'frac_coll_plus2000', 'frac_coll_plus2010', 
         'med_hhinc1990', 'med_hhinc2016', 'popdensity2000', 'poor_share2010', 'poor_share2000', 
         'poor_share1990', 'gsmn_math_g3_2013', 'traveltime15_2010', 'emp2000', 'singleparent_share1990',
-        'singleparent_share2010', 'singleparent_share2000', 
-        'mail_return_rate2010', 'jobs_total_5mi_2015', 'jobs_highpay_5mi_2015', 
-        'popdensity2010', 'job_density_2013', 'kfr_pooled_pooled_p1', 
-        'kfr_pooled_pooled_p25', 'kfr_pooled_pooled_p50', 'kfr_pooled_pooled_p75', 'kfr_pooled_pooled_p100']
+        'singleparent_share2010', 'singleparent_share2000', 'mail_return_rate2010', 'jobs_total_5mi_2015', 
+        'jobs_highpay_5mi_2015', 'popdensity2010', 'ann_avg_job_growth_2004_2013', 'job_density_2013',
+        'kfr_pooled_pooled_p1', 'kfr_pooled_pooled_p25', 'kfr_pooled_pooled_p50', 'kfr_pooled_pooled_p75', 'kfr_pooled_pooled_p100']
 
-excluded = ['rent_twobed2015', 'ln_wage_growth_hs_grad', 'ann_avg_job_growth_2004_2013']
-
-full_cols = cols + excluded
+# Greater than 15k rows with missing data
+excluded = ['rent_twobed2015', 'ln_wage_growth_hs_grad']
 
 # Handle null data
-ds_full = ds[ds.columns[ds.columns.isin(full_cols)]]
 ds = ds[ds.columns[ds.columns.isin(cols)]]
-ds = ds.dropna()
 
-# Model for full dataset (including missing data)
+# Remove columns with >= 3 missing variables
+for i, row in ds.iterrows():
+    if row.isna().sum() >= 3: 
+        ds.drop(index=i)
+
+# Model for full dataset (including some missing data)
 
 # Shuffle split the data into training and test sets (75% / 25%)
-train, test = train_test_split(ds_full)
+train, test = train_test_split(ds)
 
 train_X = train.loc[:,'hhinc_mean2000':'job_density_2013']
 test_X = test.loc[:,'hhinc_mean2000':'job_density_2013']
@@ -118,11 +110,11 @@ def init_feat_params(X):
     for n in range(features):
         mu = np.nanmean(X.iloc[:, n])
         sigma = np.nanstd(X.iloc[:, n])
-        feat_params.append((mu, sigma))
+        feat_params.append((mu, np.sqrt(sigma)))
 
 def p_x(i, xi):
     mu, sigma = feat_params[i]
-    dist = Normal(mu, sigma)
+    dist = Normal(mu, sigma**2)
     p_xi  = torch.exp(dist.log_prob(torch.tensor(np.double(xi))))
     return p_xi
 
@@ -142,7 +134,7 @@ class EMNet(nn.Module):
         params = self.seq(x)
         mu, sigma = torch.tensor_split(params, params.shape[0], dim=0)
         
-        return mu, sigma+1
+        return mu, (sigma+1)**2
 
     # Evaluate q density for EM algorithm
     # For a given data point (x, y)
@@ -207,7 +199,7 @@ class EMNet(nn.Module):
         return num / den
 
     # Produce gradients of feature distribution parameters
-    def grad_mu_xi(self, X, Y, mu_xi, sigma_xi, feat_index, imis):
+    def grad_mu_xi(self, X, Y, mu_xi, sigma_xi, feat_index, imis, X_sample):
         m = 0
         def int_func(*xmis_hat):
             # Replace missing values with current guesses
@@ -217,7 +209,9 @@ class EMNet(nn.Module):
                 if np.isnan(x_hat[f]):
                     x_hat[f] = xmis_hat[f_i]
                     f_i+=1
+            
             nn_mu, nn_sigma = self.forward(torch.tensor(np.double(x_hat)))
+            
             xi = x_hat[feat_index]
             qm = self.q(X[m], Y[m], xmis_hat, imis[m], nn_mu, nn_sigma)[0].item()
 
@@ -225,12 +219,13 @@ class EMNet(nn.Module):
 
         sum_ints = torch.zeros(1, 1)
 
-        for m in range(len(X)):
+        for m in X_sample:
+            # logging.info(f"looking at data point {m}")
             # Check if this feature is missing on this row
             if np.isnan(X[m][feat_index]):
-                 # Setup list of ranges corresponding to num of missing values
+                # Setup list of ranges corresponding to num of missing values
                 ranges = [(-np.inf, np.inf)] * len(imis[m])
-                res, err = integrate.nquad(int_func, ranges, opts={"limit": 50})
+                res, err = integrate.nquad(int_func, ranges, opts={"limit": 15})
 
             else:
                 # Otherwise we dont need to integrate
@@ -241,7 +236,7 @@ class EMNet(nn.Module):
 
         return sum_ints
 
-    def grad_sigma_xi(self, X, Y, mu_xi, sigma_xi, feat_index, imis):
+    def grad_sigma_xi(self, X, Y, mu_xi, sigma_xi, feat_index, imis, X_sample):
         m = 0
         def int_func(*xmis_hat):
             # Replace missing values with current guesses
@@ -253,6 +248,7 @@ class EMNet(nn.Module):
                     f_i+=1
 
             nn_mu, nn_sigma = self.forward(torch.tensor(np.double(x_hat)))
+            
             xi = x_hat[feat_index] 
             qm = self.q(X[m], Y[m], xmis_hat, imis[m], nn_mu, nn_sigma)[0].item()
 
@@ -260,12 +256,12 @@ class EMNet(nn.Module):
 
         sum_ints = torch.zeros(1, 1)
 
-        for m in range(len(X)):
+        for m in X_sample:
             # Check if this feature is missing on this row
             if np.isnan(X[m][feat_index]):
                 # Setup list of ranges corresponding to num of missing values
                 ranges = [(-np.inf, np.inf)] * len(imis[m])
-                res, err = integrate.nquad(int_func, ranges, opts={"limit": 50})
+                res, err = integrate.nquad(int_func, ranges, opts={"limit": 15})
 
             else:
                 # Otherwise we dont need to integrate
@@ -276,7 +272,7 @@ class EMNet(nn.Module):
 
         return sum_ints
 
-    def loss(self, X, Y, imis):
+    def loss(self, X, Y, imis, X_sample):
         logging.info("Calculating loss...")
         m = 0
         def int_func(*xmis_hat):
@@ -299,13 +295,9 @@ class EMNet(nn.Module):
 
         sum_ints = torch.zeros(1, 1)
 
-        # Randomly sample rows from the training data for each iteration
-        X_sample = loss_generator.integers(0, high=X.shape[0], size=LOSS_SAMPLE_SIZE)
-
         for m in X_sample:
             # Handle case of no missing values
             if len(imis[m]) == 0:
-                logging.info(f"row {m} : no missing values")
                 mu, sigma = self.forward(torch.tensor(np.double(X[m])))
                 dist = Normal(mu, sigma)
                 # Get p(y|x)
@@ -325,25 +317,36 @@ class EMNet(nn.Module):
         return -1 * sum_ints
 
     def predict(self, x, imis):
-        # def int_func(xmis_hat):
-        #     # Replace NaNs with xmis_hat
-        #     f_i = 0
-        #     # Replace missing values with current guesses
-        #     for f in range(len(x)):
-        #         if np.isnan(x[f]):
-        #             x[f] = xmis_hat[f_i]
-        #             f_i+=1
-        #     # Run X with current guesses through NN
-        #     mu, sigma = self.forward(torch.tensor(np.double(x)))
-        #     dist = Normal(mu, sigma)
+        y = 0 # Replaced by for loop that calls integral function
+        def int_func(xmis_hat):
+            # Replace NaNs with xmis_hat
+            f_i = 0
+            # Replace missing values with current guesses
+            for f in range(len(x)):
+                if np.isnan(x[f]):
+                    x[f] = xmis_hat[f_i]
+                    f_i+=1
+            # Run X with current guesses through NN
+            mu, sigma = self.forward(torch.tensor(np.double(x)))
+            dist = Normal(mu, sigma)
 
-        #     return qm
+            # Get log(p(y|x))
+            log_p_y_x = dist.log_prob(torch.tensor(np.double(y)))
 
-        # # Setup list of ranges corresponding to num of missing values
-        # ranges = [(-np.inf, np.inf) for i in range(len(imis))]
-        # integrate.nquad(int_func, ranges)
-        pass
+            # Return p(y|x)
+            return torch.exp(log_p_y_x)
 
+        # Store the probability of each possible y
+        y_probs = []
+
+        # Iterate over subset of possible y values: 0, 0.01, 0.02, ..., 1
+        for y in np.linspace(0, 1, 101):
+            # Setup list of ranges corresponding to num of missing values in input vector
+            ranges = [(-np.inf, np.inf) for i in range(len(imis))]
+            # Integrate over missing values
+            res, err = integrate.nquad(int_func, ranges, opts={"limit": 20})
+            # Add result to output array
+            y_probs.append((y, res.item()))
 
 # Training constants
 TRAIN_ITERATIONS = 100
@@ -360,24 +363,32 @@ def train_mdn(mdn, X, Y, optimizer, verbose):
     
     for index in range(TRAIN_ITERATIONS):
         start_time = time.time()
-        # Calculate NN loss        
-        loss = mdn.loss(X, Y, train_imissing)
+        # Calculate NN loss       
+
+        # Randomly sample rows from the training data for each iteration
+        X_sample = loss_generator.integers(0, high=X.shape[0], size=LOSS_SAMPLE_SIZE)
+        
+        loss = mdn.loss(X, Y, train_imissing, X_sample)
+
+        logging.info(f"iteration: {index} calculated loss")
         
         # Backpropagate
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
+        logging.info("backpropogation complete")
+
         # Update feature parameters using gradient descent
         for f in range(features):
             cur_mu, cur_sigma = feat_params[f]
-            grad_mu = mdn.grad_mu_xi(X, Y, cur_mu, cur_sigma, f, train_imissing)
-            grad_sigma = mdn.grad_sigma_xi(X, Y, cur_mu, cur_sigma, f, train_imissing)
+            grad_mu = mdn.grad_mu_xi(X, Y, cur_mu, cur_sigma, f, train_imissing, X_sample).item() / LOSS_SAMPLE_SIZE
+            grad_sigma = mdn.grad_sigma_xi(X, Y, cur_mu, cur_sigma, f, train_imissing, X_sample).item() / LOSS_SAMPLE_SIZE
 
-            feat_params[f] = (cur_mu+grad_mu, cur_sigma+grad_sigma)
+            feat_params[f] = (cur_mu + (FEAT_PARAM_STEP * grad_mu), cur_sigma + (FEAT_PARAM_STEP * grad_sigma))
 
         if verbose:
-            logging.info(f"iteration: {index} nn loss: {loss} time elapsed: {int(round((time.time()-start_time)/60, 0))}min")
+            logging.info(f"iteration: {index} | nn loss: {loss} | time elapsed: {int(round((time.time()-start_time)/60, 0))}min")
 
 
 # Evaluate neural network
@@ -430,4 +441,12 @@ train_mdn(mdn, train_X, train_Y, optimizer, True)
 # Save the final model
 
 torch.save(mdn, f'em_mdn.pt')
+
+# Save feature distributions to disk
+feat_dist_file = open('em_mdn_feat.txt', 'w')
+
+for d in feat_params:
+    feat_dist_file.write(f"{d[0]}, {d[1]}\n")
+
+feat_dist_file.close()
 
