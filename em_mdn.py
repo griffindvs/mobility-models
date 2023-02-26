@@ -58,7 +58,7 @@ ds = ds[ds.columns[ds.columns.isin(cols)]]
 dropped = 0
 total_before = ds.shape[0]
 for i, row in ds.iterrows():
-    if row.isna().sum() >= 3: 
+    if row.isna().sum() >= 5: 
         dropped += 1
         ds.drop(index=i, inplace=True)
 ds.reset_index()
@@ -406,7 +406,7 @@ class EMNet(nn.Module):
         return y_probs
 
 # Training constants
-TRAIN_EPOCHS = 1
+TRAIN_EPOCHS = 10
 FEAT_PARAM_STEP = 1e-5
 
 # Train neural network
@@ -484,10 +484,10 @@ def test_mdn(mdn, dataloader, outcome):
                     max_p = p
                     max_y = y
             # Compare to reference using square error
-            sq_error = sq_error + (max_y - Y[m])**2
+            sq_error = sq_error + (max_y - Y[m][outcome])**2
 
         if batch % 100 == 0:
-            logging.info(f"test nn loss: {round(loss.item() / len(X), 4)}, sq_error: {sq_error / len(X)}, time elapsed: {int(round((time.time()-start_time)/60, 0))} min [{(batch+1)*len(X):>5d}/{size:>5d}]")
+            logging.info(f"test nn loss: {round(loss.item() / len(X), 3)}, sq_error: {round(sq_error.item() / len(X), 3)}, time elapsed: {int(round((time.time()-start_time)/60, 0))} min [{(batch+1)*len(X):>5d}/{size:>5d}]")
             start_time = time.time()
 
     test_loss = test_loss / size
