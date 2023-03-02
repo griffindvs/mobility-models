@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-ds = pd.read_csv('tract_merged.csv')
+ds = pd.read_csv('../tract_merged.csv')
 
 rent_twobed = 0
 ln_wage_growth = 0

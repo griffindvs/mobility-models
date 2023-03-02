@@ -32,4 +32,4 @@ move_col = cov_out.pop('id')
 cov_out.insert(0, 'id', move_col)
 
 # Download file
-cov_out.to_csv('tract_merged.csv', index=False)
+cov_out.to_csv('../tract_merged.csv', index=False)
