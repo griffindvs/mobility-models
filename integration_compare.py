@@ -148,11 +148,11 @@ class EMNet(nn.Module):
             if len(imis[m]) != 0:
                 # Setup list of ranges corresponding to num of missing values
                 ranges = [(-np.inf, np.inf)] * len(imis[m])
-                res, err = integrate.nquad(int_func, ranges)
+                res, err = integrate.nquad(int_func, ranges, opts={'limit': 50})
 
                 # Compare with sampling
                 tot_samp = torch.zeros(1, 1)
-                SAMPLES = 1000
+                SAMPLES = 100000
                 for i in range(SAMPLES):
                     x_hat = X[m]
                     xmis = []

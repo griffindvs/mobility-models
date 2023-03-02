@@ -6,8 +6,8 @@
 ##########
 mlruns/*
 hypervalidation/*
-*.pt
-em_mdn_feat.txt
+#*.pt
+#em_mdn_feat.txt
 
 # Compiled source #
 ###################

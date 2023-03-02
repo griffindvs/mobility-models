@@ -495,6 +495,12 @@ def test_mdn(mdn, dataloader, outcome):
 
     return test_loss, sq_error
 
+# Outcome index constants
+P1_INDEX = 0
+P25_INDEX = 1
+P50_INDEX = 2
+P75_INDEX = 3
+
 # Retrain with full training dataset (selected 10)"
 mdn = EMNet(features, 10, 2).double().to(device)
 optimizer = torch.optim.Adam(mdn.parameters(), lr=1e-4)
@@ -505,12 +511,12 @@ init_feat_params(train_dataset.dataset)
 
 for epoch in range(TRAIN_EPOCHS):
     logging.info(f"\nEpoch {epoch+1}/{TRAIN_EPOCHS}")
-    train_mdn(mdn, train_dataloader, optimizer, 2)
+    train_mdn(mdn, train_dataloader, optimizer, P75_INDEX)
 
 logging.info(f"Training completed in {(time.time()-total_time)/60:.{4}f}min")
 
 logging.info("\nTesting model...")
-test_loss, sq_error = test_mdn(mdn, test_dataloader, 2)
+test_loss, sq_error = test_mdn(mdn, test_dataloader, P75_INDEX)
 logging.info("Testing complete:")
 logging.info(f"Neural network loss: {round(test_loss.item(), 4)}, average squared error: {round(sq_error.item(), 4)}")
 
@@ -522,7 +528,7 @@ logging.info("Neural network saved to em_mdn.pt")
 feat_dist_file = open('em_mdn_feat.txt', 'w')
 
 for d in feat_params:
-    feat_dist_file.write(f"{d[0]}, {d[1]}\n")
+    feat_dist_file.write(f"{d[0].item()}, {d[1].item()}\n")
 
 feat_dist_file.close()
 
