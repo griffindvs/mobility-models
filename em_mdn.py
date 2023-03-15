@@ -134,7 +134,7 @@ train_dataset, test_dataset = random_split(dataset, [0.75, 0.25], generator=torc
 # Create dataloaders from split datasets
 # Set batch size to desired sample size for loss calculations
 BATCH_SIZE = 50
-Q_SAMPLES = 100
+Q_SAMPLES = 20
 MIN_SD = 0.01
 train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, 
         shuffle=True, num_workers=0, generator=torch.Generator(device='cpu'))
@@ -511,12 +511,12 @@ init_feat_params(train_dataset.dataset)
 
 for epoch in range(TRAIN_EPOCHS):
     logging.info(f"\nEpoch {epoch+1}/{TRAIN_EPOCHS}")
-    train_mdn(mdn, train_dataloader, optimizer, P75_INDEX)
+    train_mdn(mdn, train_dataloader, optimizer, P25_INDEX)
 
 logging.info(f"Training completed in {(time.time()-total_time)/60:.{4}f}min")
 
 logging.info("\nTesting model...")
-test_loss, sq_error = test_mdn(mdn, test_dataloader, P75_INDEX)
+test_loss, sq_error = test_mdn(mdn, test_dataloader, P25_INDEX)
 logging.info("Testing complete:")
 logging.info(f"Neural network loss: {round(test_loss.item(), 4)}, average squared error: {round(sq_error.item(), 4)}")
 
