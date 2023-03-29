@@ -17,12 +17,21 @@ from importlib import reload
 import pandas as pd
 import numpy as np
 from urllib.parse import urlparse
+from urllib.request import urlretrieve
+
+import argparse
 
 import torch
 from torch import nn
 from torch.distributions import Normal
 from torch.utils.data import Dataset, DataLoader, random_split
 nnF = nn.functional
+
+parser = argparse.ArgumentParser(description='Train and test a mixture density network for outcome prediction.')
+parser.add_argument('--model', type=int, nargs='+', required=True, help='the integer(s) corresponding to the models you wish to train (25, 50, 75)')
+parser.add_argument('--samples', type=int, nargs='+', default=[20], help='the number of samples to use when estimating missing features (e.g. 20, 100, 1000)')
+parser.add_argument('-s', '--save', action='store_true', help='whether to save the trained model(s) (true or false)')
+args = parser.parse_args()
 
 if not os.path.exists('logs'):
     os.makedirs('logs')
@@ -39,7 +48,8 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 # Download data
-get_ipython().system('wget -nc https://personal.utdallas.edu/~gcd/data/tract_merged.csv')
+if not os.path.isfile('tract_merged.csv'):
+    urlretrieve('https://personal.utdallas.edu/~gcd/data/tract_merged.csv')
 ds = pd.read_csv('tract_merged.csv')
 
 # Get subset of columns
@@ -82,10 +92,13 @@ class MobilityDataset(Dataset):
         """
         self.frame = dataframe
         self.transform = transform
-        
-        # Normalize columns, handling NaN values, skipping id column and outcomes
+
+        # Drop id column
+        self.frame.drop(columns='id')
+
+        # Normalize columns, handling NaN values, skipping outcomes
         if normalize:
-            self.frame.iloc[:,1:-5] = (self.frame.iloc[:,1:-5] - self.frame.iloc[:,1:-5].mean()) / self.frame.iloc[:,1:-5].std()
+            self.frame.iloc[:,0:-5] = (self.frame.iloc[:,0:-5] - self.frame.iloc[:,0:-5].mean()) / self.frame.iloc[:,0:-5].std()
     
     def __len__(self):
         """Return the number of samples contained within the dataframe."""
@@ -134,7 +147,6 @@ train_dataset, test_dataset = random_split(dataset, [0.75, 0.25], generator=torc
 # Create dataloaders from split datasets
 # Set batch size to desired sample size for loss calculations
 BATCH_SIZE = 50
-Q_SAMPLES = 20
 MIN_SD = 0.01
 train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, 
         shuffle=True, num_workers=0, generator=torch.Generator(device='cpu'))
@@ -150,6 +162,7 @@ feat_params = []
 
 def init_feat_params(dataset):
     """Initialize parameters for the normal distributions of each covariate type."""
+    feat_params.clear()
     for n in range(features):
         mu = torch.tensor(np.nanmean(dataset.get_feature_column(n)), requires_grad=False).to(device)
         sigma = torch.tensor(np.nanstd(dataset.get_feature_column(n)), requires_grad=False).to(device)
@@ -164,7 +177,7 @@ def log_p_x(i, xi):
 
 class EMNet(nn.Module):
     """Mixture density network utilizing the EM algorithm for computing model loss."""
-    def __init__(self, features, hidden_dim, out_dim):
+    def __init__(self, features, hidden_dim, out_dim, q_samples=20):
         """
         Args:
             features    (int) : The number of covariates per neighborhood used to make predictions.
@@ -181,6 +194,7 @@ class EMNet(nn.Module):
         # Reset storage of q() function values
         self.have_stored_q = False
         self.stored_q = torch.empty((1, 1))
+        self.q_samples = q_samples
     
     def forward(self, x):
         """
@@ -239,7 +253,7 @@ class EMNet(nn.Module):
             if torch.isnan(X[m][feat_index]):
                 # Sample from feature distributions
                 tot_samp = torch.zeros(1, 1).to(device)
-                for i in range(Q_SAMPLES):
+                for i in range(self.q_samples):
                     x_hat = X[m].clone()
                     xmis = []
                     for imis in missing:
@@ -257,7 +271,7 @@ class EMNet(nn.Module):
                     tot_samp = tot_samp + (qm * ((xi / (sigma_xi**2)) - (mu_xi / (sigma_xi**2))))
 
                 # Add average tot_samp to loss
-                sum_loss = sum_loss + (tot_samp / Q_SAMPLES)
+                sum_loss = sum_loss + (tot_samp / self.q_samples)
             else:
                 # Otherwise we can calculate directly
                 xi = X[m][feat_index]
@@ -286,7 +300,7 @@ class EMNet(nn.Module):
             if torch.isnan(X[m][feat_index]):
                 # Sample from feature distributions
                 tot_samp = torch.zeros(1, 1).to(device)
-                for i in range(Q_SAMPLES):
+                for i in range(self.q_samples):
                     x_hat = X[m].clone()
                     xmis = []
                     for imis in missing:
@@ -304,7 +318,7 @@ class EMNet(nn.Module):
                     tot_samp = tot_samp + (qm * ((-1 / sigma_xi) - ((xi - mu_xi) / sigma_xi**3)))
 
                 # Add average tot_samp to loss
-                sum_loss = sum_loss + (tot_samp / Q_SAMPLES)
+                sum_loss = sum_loss + (tot_samp / self.q_samples)
             else:
                 # Otherwise we can calculate directly
                 xi = X[m][feat_index]
@@ -338,7 +352,7 @@ class EMNet(nn.Module):
                 # Sample from feature distributions
                 tot_samp = torch.zeros(1, 1).to(device)
 
-                for i in range(Q_SAMPLES):
+                for i in range(self.q_samples):
                     x_hat = X[m].clone()
                     xmis = []
 
@@ -364,7 +378,7 @@ class EMNet(nn.Module):
                     tot_samp = tot_samp + torch.exp(log_qm) * (log_p_y_x)
 
                 # Add average tot_samp to loss
-                sum_loss = sum_loss + (tot_samp / Q_SAMPLES)
+                sum_loss = sum_loss + (tot_samp / self.q_samples)
 
         return -1 * sum_loss
 
@@ -376,7 +390,7 @@ class EMNet(nn.Module):
             # Sample from feature distributions
             missing = torch.nonzero(torch.isnan(x))
             tot_samp = torch.zeros(1, 1).to(device)
-            for i in range(Q_SAMPLES):
+            for i in range(self.q_samples):
                 x_hat = x.clone()
                 xmis = []
 
@@ -398,7 +412,7 @@ class EMNet(nn.Module):
                 # Add to total of samples
                 tot_samp = tot_samp + log_p_y_x
 
-            res = torch.exp(tot_samp / Q_SAMPLES)
+            res = torch.exp(tot_samp / self.q_samples)
 
             # Add result to output array
             y_probs.append((y, res.item()))
@@ -484,10 +498,11 @@ def test_mdn(mdn, dataloader, outcome):
                     max_p = p
                     max_y = y
             # Compare to reference using square error
-            sq_error = sq_error + (max_y - Y[m][outcome])**2
+            new_error = (max_y - Y[m][outcome])**2
+            sq_error = sq_error + new_error
 
         if batch % 100 == 0:
-            logging.info(f"test nn loss: {round(loss.item() / len(X), 3)}, sq_error: {round(sq_error.item() / len(X), 3)}, time elapsed: {int(round((time.time()-start_time)/60, 0))} min [{(batch+1)*len(X):>5d}/{size:>5d}]")
+            logging.info(f"test nn loss: {round(loss.item() / len(X), 3)}, sq_error: {round(new_error.item() / len(X), 3)}, time elapsed: {int(round((time.time()-start_time)/60, 0))} min [{(batch+1)*len(X):>5d}/{size:>5d}]")
             start_time = time.time()
 
     test_loss = test_loss / size
@@ -495,42 +510,52 @@ def test_mdn(mdn, dataloader, outcome):
 
     return test_loss, sq_error
 
-# Outcome index constants
-P1_INDEX = 0
-P25_INDEX = 1
-P50_INDEX = 2
-P75_INDEX = 3
+# ********** Run the training and testing code **********
+for sample_count in args.samples:
+    for percentile in args.model:
+        logging.info("***************************************************************************")
+        logging.info(f"Training model for {percentile}th Percentile, {sample_count} Samples")
 
-# Retrain with full training dataset (selected 10)"
-mdn = EMNet(features, 10, 2).double().to(device)
-optimizer = torch.optim.Adam(mdn.parameters(), lr=1e-4)
+        P_INDEX = 2
+        if percentile == 25:
+            P_INDEX = 1
+        elif percentile == 75:
+            P_INDEX = 3
 
-total_time = time.time()
+        # Train with full training dataset (selected hidden_dim=10)"
+        mdn = EMNet(features, 10, 2, q_samples=sample_count).double().to(device)
+        optimizer = torch.optim.Adam(mdn.parameters(), lr=1e-4)
 
-init_feat_params(train_dataset.dataset)
+        total_time = time.time()
 
-for epoch in range(TRAIN_EPOCHS):
-    logging.info(f"\nEpoch {epoch+1}/{TRAIN_EPOCHS}")
-    train_mdn(mdn, train_dataloader, optimizer, P25_INDEX)
+        init_feat_params(train_dataset.dataset)
 
-logging.info(f"Training completed in {(time.time()-total_time)/60:.{4}f}min")
+        for epoch in range(TRAIN_EPOCHS):
+            logging.info(f"\nEpoch {epoch+1}/{TRAIN_EPOCHS}")
+            train_mdn(mdn, train_dataloader, optimizer, P_INDEX)
 
-logging.info("\nTesting model...")
-test_loss, sq_error = test_mdn(mdn, test_dataloader, P25_INDEX)
-logging.info("Testing complete:")
-logging.info(f"Neural network loss: {round(test_loss.item(), 4)}, average squared error: {round(sq_error.item(), 4)}")
+        logging.info(f"Training completed in {(time.time()-total_time)/60:.{4}f}min")
 
-# Save the final model
-torch.save(mdn, f'em_mdn.pt')
-logging.info("Neural network saved to em_mdn.pt")
+        logging.info("\nTesting model...")
+        test_loss, sq_error = test_mdn(mdn, test_dataloader, P_INDEX)
+        logging.info("Testing complete:")
+        logging.info(f"Neural network loss: {round(test_loss.item(), 4)}, average squared error: {round(sq_error.item(), 4)}")
 
-# Save feature distributions to disk
-feat_dist_file = open('em_mdn_feat.txt', 'w')
+        if args.save:
+            # Save the final model
+            torch.save_state_dict(mdn, f'{percentile}p_em_mdn.pt')
+            logging.info(f"Neural network saved to {percentile}p_em_mdn.pt")
 
-for d in feat_params:
-    feat_dist_file.write(f"{d[0].item()}, {d[1].item()}\n")
+            # Save feature distributions to disk
+            feat_dist_file = open(f'{percentile}p_em_mdn_feat.txt', 'w')
 
-feat_dist_file.close()
+            for d in feat_params:
+                feat_dist_file.write(f"{d[0].item()}, {d[1].item()}\n")
 
-logging.info("Feature distributions saved to em_mdn_feat.txt")
+            feat_dist_file.close()
+
+            logging.info(f"Feature distributions saved to {percentile}p_em_mdn_feat.txt")
+
+        logging.info(f"Completed training and testing of model for {percentile}th percentile, {sample_count} samples")
+        logging.info("****************************************************************************")
 
